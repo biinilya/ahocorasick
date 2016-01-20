@@ -11,6 +11,7 @@ package ahocorasick
 
 import (
 	"container/list"
+	"sync"
 )
 
 // A node in the trie structure used to implement Aho-Corasick
@@ -46,9 +47,54 @@ type node struct {
 	// because it is used to fallback in the trie when a match fails.
 }
 
+type Matcher struct {
+	bDict [][]byte
+	sDict []string
+	mPool *sync.Pool
+	mDone sync.Once
+}
+
+func (self *Matcher) newMatcher() *matcher {
+	mFunc := func() interface{} {
+		if self.bDict != nil {
+			return newMatcher(self.bDict)
+		}
+		return newStringMatcher(self.sDict)
+	}
+	self.mDone.Do(func() {
+		self.mPool = &sync.Pool{
+			New: mFunc,
+		}
+	})
+	return self.mPool.Get().(*matcher)
+}
+
+func (self *Matcher) freeMatcher(m *matcher) {
+	self.mPool.Put(m)
+}
+
+func (self *Matcher) Match(in []byte) (r []int) {
+	var m = self.newMatcher()
+	r = m.Match(in)
+	self.freeMatcher(m)
+	return
+}
+
+func NewMatcher(dictionary [][]byte) *Matcher {
+	var M = new(Matcher)
+	M.bDict = dictionary
+	return M
+}
+
+func NewStringMatcher(dictionary []string) *Matcher {
+	var M = new(Matcher)
+	M.sDict = dictionary
+	return M
+}
+
 // Matcher is returned by NewMatcher and contains a list of blices to
 // match against
-type Matcher struct {
+type matcher struct {
 	counter int // Counts the number of matches done, and is used to
 	// prevent output of multiple matches of the same string
 	trie []node // preallocated block of memory containing all the
@@ -60,7 +106,7 @@ type Matcher struct {
 // finndBlice looks for a blice in the trie starting from the root and
 // returns a pointer to the node representing the end of the blice. If
 // the blice is not found it returns nil.
-func (m *Matcher) findBlice(b []byte) *node {
+func (m *matcher) findBlice(b []byte) *node {
 	n := &m.trie[0]
 
 	for n != nil && len(b) > 0 {
@@ -73,7 +119,7 @@ func (m *Matcher) findBlice(b []byte) *node {
 
 // getFreeNode: gets a free node structure from the Matcher's trie
 // pool and updates the extent to point to the next free node.
-func (m *Matcher) getFreeNode() *node {
+func (m *matcher) getFreeNode() *node {
 	m.extent += 1
 
 	if m.extent == 1 {
@@ -86,7 +132,7 @@ func (m *Matcher) getFreeNode() *node {
 
 // buildTrie builds the fundamental trie structure from a set of
 // blices.
-func (m *Matcher) buildTrie(dictionary [][]byte) {
+func (m *matcher) buildTrie(dictionary [][]byte) {
 
 	// Work out the maximum size for the trie (all dictionary entries
 	// are distinct plus the root). This is used to preallocate memory
@@ -190,8 +236,8 @@ func (m *Matcher) buildTrie(dictionary [][]byte) {
 
 // NewMatcher creates a new Matcher used to match against a set of
 // blices
-func NewMatcher(dictionary [][]byte) *Matcher {
-	m := new(Matcher)
+func newMatcher(dictionary [][]byte) *matcher {
+	m := new(matcher)
 
 	m.buildTrie(dictionary)
 
@@ -200,8 +246,8 @@ func NewMatcher(dictionary [][]byte) *Matcher {
 
 // NewStringMatcher creates a new Matcher used to match against a set
 // of strings (this is a helper to make initialization easy)
-func NewStringMatcher(dictionary []string) *Matcher {
-	m := new(Matcher)
+func newStringMatcher(dictionary []string) *matcher {
+	m := new(matcher)
 
 	var d [][]byte
 	for _, s := range dictionary {
@@ -215,7 +261,7 @@ func NewStringMatcher(dictionary []string) *Matcher {
 
 // Match searches in for blices and returns all the blices found as
 // indexes into the original dictionary
-func (m *Matcher) Match(in []byte) []int {
+func (m *matcher) Match(in []byte) []int {
 	m.counter += 1
 	var hits []int
 
